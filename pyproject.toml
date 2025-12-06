@@ -1,0 +1,16 @@
+[project]
+name = "fmcps1"
+version = "0.1.0"
+description = "Solution to the first assignment of the Formal Methods for Cyber-Physical Systems course of the Master's Degree in Computer Science at the Università degli Studi di Padua"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "ipykernel>=7.1.0",
+    "jupyter>=1.1.1",
+    "notebook>=7.5.0",
+]
+
+[dependency-groups]
+dev = [
+    "nbstripout>=0.8.2",
+]
