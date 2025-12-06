@@ -45,25 +45,29 @@ The archive react_examples.zip contains some SMV programs to test your implement
 In the second part of the assignment you will implement a symbolic algorithm for the verification of a special class of LTL formulas, using BDDs as data structure to represent and manipulate regions. The formulas considered by the algorithm are called response formulas, and have the special form
 
 $$
-\square(f \rightarrow \lozenge f)
+\square(f \rightarrow \lozenge g)
 $$
 
 where each $f$ and $g$ are Boolean combinations of base formulas with no temporal operators. Response is a rich fragment of LTL, that can express many useful liveness requirements. Some examples of liveness properties for the Railroad Controller that can be written as response formulas are listed below.
 
 A west train that is waiting will eventually be allowed on the bridge:
+
 $$
 \square(train_w.mode=wait \rightarrow \lozenge train_w.mode=bridge)
 $$
 
 If the west train is waiting then either the corresponding signal will be green or the east train will be on the bridge:
+
 $$
 \square(train_w.mode=wait \rightarrow \lozenge (signal_w = green \lor train_e.mode = bridge))
 $$
 
 If the west train is waiting with the east train off the bridge, then the west train will be allowed on the bridge:
+
 $$
 \square(\neg(train_e.mode = bridge) \land train_w.mode = bridge \rightarrow \lozenge train_w.mode=bridge)
 $$
+
 The following formulas are not response formulas, and should be discarded by the algorithm:
 
 - $\square\lozenge train_w.mode=wait \rightarrow \square\lozenge signal_w=green$
