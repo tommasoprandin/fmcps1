@@ -1,35 +1,29 @@
-import sys
+# minor modification of Attempt 4
 import pynusmv
-from pynusmv_lower_interface.nusmv.parser import parser 
+import sys
+from pynusmv_lower_interface.nusmv.parser import parser
+from typing import Tuple, Optional, Dict, List, Any
 
 specTypes = {'LTLSPEC': parser.TOK_LTLSPEC, 'CONTEXT': parser.CONTEXT,
-    'IMPLIES': parser.IMPLIES, 'IFF': parser.IFF, 'OR': parser.OR, 'XOR': parser.XOR, 'XNOR': parser.XNOR,
-    'AND': parser.AND, 'NOT': parser.NOT, 'ATOM': parser.ATOM, 'NUMBER': parser.NUMBER, 'DOT': parser.DOT,
-
-    'NEXT': parser.OP_NEXT, 'OP_GLOBAL': parser.OP_GLOBAL, 'OP_FUTURE': parser.OP_FUTURE,
-    'UNTIL': parser.UNTIL,
-    'EQUAL': parser.EQUAL, 'NOTEQUAL': parser.NOTEQUAL, 'LT': parser.LT, 'GT': parser.GT,
-    'LE': parser.LE, 'GE': parser.GE, 'TRUE': parser.TRUEEXP, 'FALSE': parser.FALSEEXP
-}
+             'IMPLIES': parser.IMPLIES, 'IFF': parser.IFF, 'OR': parser.OR, 'XOR': parser.XOR, 'XNOR': parser.XNOR,
+             'AND': parser.AND, 'NOT': parser.NOT, 'ATOM': parser.ATOM, 'NUMBER': parser.NUMBER, 'DOT': parser.DOT,
+             'NEXT': parser.OP_NEXT, 'OP_GLOBAL': parser.OP_GLOBAL, 'OP_FUTURE': parser.OP_FUTURE,
+             'UNTIL': parser.UNTIL,
+             'EQUAL': parser.EQUAL, 'NOTEQUAL': parser.NOTEQUAL, 'LT': parser.LT, 'GT': parser.GT,
+             'LE': parser.LE, 'GE': parser.GE, 'TRUE': parser.TRUEEXP, 'FALSE': parser.FALSEEXP
+             }
 
 basicTypes = {parser.ATOM, parser.NUMBER, parser.TRUEEXP, parser.FALSEEXP, parser.DOT,
               parser.EQUAL, parser.NOTEQUAL, parser.LT, parser.GT, parser.LE, parser.GE}
-booleanOp = {parser.AND, parser.OR, parser.XOR, parser.XNOR, parser.IMPLIES, parser.IFF}
+booleanOp = {parser.AND, parser.OR, parser.XOR,
+             parser.XNOR, parser.IMPLIES, parser.IFF}
 
 def spec_to_bdd(model, spec):
-    """
-    Given a formula `spec` with no temporal operators, returns a BDD equivalent to
-    the formula, that is, a BDD that contains all the states of `model` that
-    satisfy `spec`
-    """
-    bddspec = pynusmv.mc.eval_simple_expression(model, str(spec))
-    return bddspec
-    
+    # expression (no temporal operators) -> BDD
+    return pynusmv.mc.eval_simple_expression(model, str(spec))
+
 def is_boolean_formula(spec):
-    """
-    Given a formula `spec`, checks if the formula is a boolean combination of base
-    formulas with no temporal operators. 
-    """
+    # Checks if spec is a boolean combination of basic formulas
     if spec.type in basicTypes:
         return True
     if spec.type == specTypes['NOT']:
@@ -37,78 +31,305 @@ def is_boolean_formula(spec):
     if spec.type in booleanOp:
         return is_boolean_formula(spec.car) and is_boolean_formula(spec.cdr)
     return False
-    
+
 def parse(spec):
-    """
-    Visit the syntactic tree of the formula `spec` to check if it is a response formula,
-    that is wether the formula is of the form
-    
-                    G (f -> F g)
-    
-    where f and g are boolean combination of basic formulas.
-    
-    If `spec` is a response formula, the result is a pair where the first element is the 
-    formula f and the second element is the formula g. If `spec` is not a response 
-    formula, then the result is None.
-    """
-    # the root of a spec should be of type CONTEXT
+    # Parser for Response properties: G(f -> F g)
+    # Returns (f_formula, g_formula) if 'spec' matches, else None
     if spec.type != specTypes['CONTEXT']:
         return None
-    # the right child of a context is the main formula
     spec = spec.cdr
-    # the root of a response formula should be of type OP_GLOBAL 
-    if spec.type != specTypes['OP_GLOBAL']:
+
+    if spec.type != specTypes['OP_GLOBAL']: # must be G(...)
         return None
-    # The formula in the scope of the G operator must be of type IMPLIES
     spec = spec.car
-    if spec.type != specTypes['IMPLIES']:
+
+    if spec.type != specTypes['IMPLIES']: # must be f -> ...
         return None
-    # Check if lhs of the implication is a formula with no temporal operators
+
     f_formula = spec.car
     if not is_boolean_formula(f_formula):
         return None
-    # Check if rhs of the implication is a F g formula
+
     g_formula = spec.cdr
-    if g_formula.type != specTypes['OP_FUTURE']:
+    if g_formula.type != specTypes['OP_FUTURE']: # must be F g
         return None
     g_formula = g_formula.car
+
     if not is_boolean_formula(g_formula):
         return None
+
     return (f_formula, g_formula)
 
+def _compute_reachable(fsm_model) -> Tuple[pynusmv.dd.BDD, List[pynusmv.dd.BDD]]:
+    # Set of reachable states (R) using forward BFS
+    # Returns (R, trace_layers)
+    R = fsm_model.init
+    F = fsm_model.init
+    trace_layers = [F]
+
+    while not F.is_false():
+        F_next = fsm_model.post(F) - R
+        if F_next.is_false():
+            break
+        trace_layers.append(F_next)
+        R = R + F_next
+        F = F_next
+
+    return R, trace_layers
+
+def _compute_eg(fsm_model, bdd_prop) -> pynusmv.dd.BDD:
+    # Set of states satisfying EG(bdd_prop).
+    # Fixed Point: Z = bdd_prop & EX(Z)
+    Z = bdd_prop.true()      # universal BDD True
+    while True:
+        pre_Z = fsm_model.pre(Z)
+        next_Z = bdd_prop & pre_Z
+        if next_Z == Z:
+            return Z
+        Z = next_Z
+
+
+def _build_prefix_trace(fsm_model, trace_layers, violating_state_bdd) -> List[Dict[str, str]]:
+    # Prefix of a counterexample from Init to violating_state_bdd
+    last_state = violating_state_bdd
+    counterexample_list = [last_state.get_str_values()]
+
+    has_inputs = len(fsm_model.bddEnc.inputsVars) > 0
+    curr_state_bdd = last_state
+    backward_state_bdd_list=[last_state]
+
+    # Iterate backwards to find the path
+    for layer in reversed(trace_layers[:-1]):
+        # predecessor of 'curr' in current 'layer'
+        possible_predecessors = fsm_model.pre(curr_state_bdd) & layer
+
+        if possible_predecessors.is_false():
+            continue
+
+        prev_state_bdd = fsm_model.pick_one_state(possible_predecessors)
+
+        if has_inputs:
+            inputs_between = fsm_model.get_inputs_between_states(prev_state_bdd, curr_state_bdd)
+            picked_inputs = fsm_model.pick_one_inputs(inputs_between)
+            counterexample_list.insert(0, picked_inputs.get_str_values())
+        else:
+            counterexample_list.insert(0, {})
+
+        counterexample_list.insert(0, prev_state_bdd.get_str_values())
+        backward_state_bdd_list.append(prev_state_bdd)
+        curr_state_bdd = prev_state_bdd
+
+    return counterexample_list, backward_state_bdd_list
+
 def check_explain_response_spec(spec):
-    """
-    Return whether the loaded SMV model satisfies or not the GR(1) formula
-    `spec`, that is, whether all executions of the model satisfies `spec`
-    or not. 
-    """
-    if parse(spec) == None:
+    # Checks a Response property G(f -> F g)
+    fsm_model = pynusmv.glob.prop_database().master.bddFsm
+
+    parsed = parse(spec)
+    if parsed is None:
         return None
-    return pynusmv.mc.check_explain_ltl_spec(spec)
+
+    f_formula, g_formula = parsed
+
+    bdd_f = spec_to_bdd(fsm_model, f_formula) # may include inputs
+    bdd_g = spec_to_bdd(fsm_model, g_formula)
+    bdd_not_g = ~bdd_g
+
+    bdd_eg_not_g = _compute_eg(fsm_model, bdd_not_g)
+
+    # abstract input vars from bdd_f to fix switch 1/2
+    inputs_vars = getattr(fsm_model.bddEnc, 'inputsVars', None)
+    bdd_f_states = bdd_f # default if no inputs
+
+    if inputs_vars and len(inputs_vars) > 0:
+        inputs_cube = None
+        try:
+            inputs_cube = fsm_model.bddEnc.cube_for_inputs_vars()
+        except Exception:
+            inputs_cube = getattr(fsm_model.bddEnc, 'inputsCube', None)
+            if callable(inputs_cube):
+                try:
+                    inputs_cube = inputs_cube()
+                except Exception:
+                    pass
+
+        tried = False
+        last_exc = None
+        if inputs_cube is not None:
+            try:
+                bdd_f_states = bdd_f.forsome(inputs_cube)
+                tried = True
+            except Exception as e:
+                last_exc = e
+                tried = False
+        if not tried:
+            try:
+                bdd_f_states = bdd_f.forsome(inputs_vars)
+                tried = True
+            except Exception as e:
+                last_exc = e
+                tried = False
+        if not tried:
+            try:
+                bdd_f_states = bdd_f.existAbstract(inputs_cube)
+                tried = True
+            except Exception:
+                try:
+                    bdd_f_states = bdd_f.exist(inputs_cube)
+                    tried = True
+                except Exception as e:
+                    last_exc = e
+                    tried = False
+
+        if not tried:
+            raise RuntimeError("Could not abstract input variables from bdd_f. Last exc: {}".format(repr(last_exc)))
+
+    bdd_bad_states = bdd_f_states & bdd_eg_not_g
+
+    if bdd_bad_states.is_false():
+        return (True, None)
+
+    reachable_states, trace_layers = _compute_reachable(fsm_model)
+
+    # Intersect: reachable; pre(EG(¬g)); exists-input-f; ¬g
+    pre_into_eg = fsm_model.pre(bdd_eg_not_g)
+    candidate_states = reachable_states & pre_into_eg & bdd_f_states & bdd_not_g
+
+    if candidate_states.is_false():
+        return (True, None)
+
+    # witness triple (s, input, s_next)
+    s_violation_bdd = None
+    s_violation_next_bdd = None
+    s_violation_input_bdd = None
+
+    remaining = candidate_states
+    while not remaining.is_false():
+        s = fsm_model.pick_one_state(remaining)
+        remaining = remaining & ~s
+
+        # successors of s in EG(¬g)
+        possible_successors = fsm_model.post(s) & bdd_eg_not_g
+        if possible_successors.is_false():
+            continue
+
+        succs = possible_successors
+        while not succs.is_false():
+            s_next = fsm_model.pick_one_state(succs)
+            succs = succs & ~s_next
+
+            # inputs enabling s -> s_next
+            try:
+                inputs_between = fsm_model.get_inputs_between_states(s, s_next)
+            except Exception:
+                inputs_between = None
+
+            if inputs_between is None or inputs_between.is_false():
+                continue
+
+            # input that allows transition + makes f true at s
+            witness_inputs_bdd = bdd_f & s & inputs_between
+            if witness_inputs_bdd.is_false():
+                continue
+
+            # found witness
+            s_violation_bdd = s
+            s_violation_next_bdd = s_next
+            if hasattr(fsm_model, 'pick_one_inputs'):
+                s_violation_input_bdd = fsm_model.pick_one_inputs(witness_inputs_bdd)
+            else:
+                s_violation_input_bdd = witness_inputs_bdd
+            break
+
+        if s_violation_bdd is not None:
+            break
+
+    if s_violation_bdd is None:
+        return (True, None)
+
+    # prefix trace (Init -> ... -> s_violation)
+    prefix_trace_list, backward_state_bdd_list = _build_prefix_trace(fsm_model, trace_layers, s_violation_bdd)
+
+    # loop (s_violation -> ... -> s_loop)
+    loop_list = []
+    has_inputs = len(fsm_model.bddEnc.inputsVars) > 0
+
+    if has_inputs:
+        try:
+            picked_inputs_dict = s_violation_input_bdd.get_str_values()
+        except Exception:
+            # reconstruct inputs between chosen states
+            picked_inputs = fsm_model.pick_one_inputs(fsm_model.get_inputs_between_states(s_violation_bdd, s_violation_next_bdd))
+            picked_inputs_dict = picked_inputs.get_str_values()
+        loop_list.append(picked_inputs_dict)
+    else:
+        loop_list.append({})
+
+    loop_list.append(s_violation_next_bdd.get_str_values())
+
+    # closing loop
+    curr_bdd = s_violation_next_bdd
+    bdd_eg_not_g_consec = [backward_state_bdd_list[-1].get_str_values()]
+    for state in reversed(backward_state_bdd_list[:-1]):
+        if (state & bdd_eg_not_g).is_false():
+            break
+        bdd_eg_not_g_consec.append(state.get_str_values())
+
+    while True:
+        possible_successors = fsm_model.post(curr_bdd) & bdd_eg_not_g
+        if possible_successors.is_false():
+            # EG promised a successor
+            return (False, tuple(prefix_trace_list))
+
+        next_bdd = fsm_model.pick_one_state(possible_successors)
+        if has_inputs:
+            inputs_between = fsm_model.get_inputs_between_states(curr_bdd, next_bdd)
+            picked_inputs = fsm_model.pick_one_inputs(inputs_between)
+            loop_list.append(picked_inputs.get_str_values())
+        else:
+            loop_list.append({})
+        loop_list.append(next_bdd.get_str_values())
+
+        if next_bdd.get_str_values() in bdd_eg_not_g_consec:
+            full_trace = prefix_trace_list + loop_list
+            return (False, tuple(full_trace))
+
+        bdd_eg_not_g_consec.append(next_bdd.get_str_values())
+        curr_bdd = next_bdd
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage:", sys.argv[0], "filename.smv")
         sys.exit(1)
-    
+
     pynusmv.init.init_nusmv()
     filename = sys.argv[1]
-    pynusmv.glob.load_from_file(filename)
-    pynusmv.glob.compute_model()
+    try:
+        pynusmv.glob.load_from_file(filename)
+        pynusmv.glob.compute_model()
+    except OSError as e:
+        print(f"Error loading file: {e}")
+        pynusmv.init.deinit_nusmv()
+        sys.exit(1)
+
     type_ltl = pynusmv.prop.propTypes['LTL']
+
     for prop in pynusmv.glob.prop_database():
         spec = prop.expr
         print(spec)
+
         if prop.type != type_ltl:
             print("property is not LTLSPEC, skipping")
             continue
+
         res = check_explain_response_spec(spec)
-        if res == None:
+
+        if res is None:
             print('Property is not a response formula, skipping')
         elif res[0] == True:
             print("Property is respected")
         elif res[0] == False:
             print("Property is not respected")
             print("Counterexample:", res[1])
-    
+
     pynusmv.init.deinit_nusmv()
