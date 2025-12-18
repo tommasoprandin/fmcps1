@@ -52,7 +52,7 @@ def check_explain_inv_spec(spec) -> Tuple[bool, Optional[Tuple[Dict[str, str], .
         possible_predecessors = fsm_model.pre(next_state)
         intersect = layer.intersection(possible_predecessors)
 
-        # It should not happen in a valid back-traversal
+        # Can't happen in a valid back-traversal
         if intersect.is_false():
             continue
 
@@ -62,7 +62,7 @@ def check_explain_inv_spec(spec) -> Tuple[bool, Optional[Tuple[Dict[str, str], .
         if has_inputs:
             inputs_between = fsm_model.get_inputs_between_states(chosen_pre, next_state)
             picked_inputs = fsm_model.pick_one_inputs(inputs_between)
-            # Cover the case where there were no picked inputs (should not happen for a valid transition)
+            # Cover the case where there were no picked inputs (can't happen for a valid transition)
             if picked_inputs:
                 counterexample.insert(0, picked_inputs.get_str_values())
             else:

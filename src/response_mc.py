@@ -1,4 +1,4 @@
-# minor modification of Attempt 4 (Nicole)
+
 import pynusmv
 import sys
 from pynusmv_lower_interface.nusmv.parser import parser
@@ -84,7 +84,7 @@ def _compute_EG(fsm_model, bdd_prop) -> pynusmv.dd.BDD:
     # Fixed Point: Z = bdd_prop & EX(Z)
     Z = bdd_prop
     while True:
-        pre_Z = fsm_model.pre(Z)
+        pre_Z = fsm_model.pre(Z, bdd_prop)
         next_Z = bdd_prop & pre_Z
 
         if next_Z == Z:
@@ -95,6 +95,9 @@ def _build_prefix_trace(fsm_model, trace_layers, violating_state_bdd) -> List[Di
     # Prefix of a counterexample from Init to violating_state_bdd
     last_state = violating_state_bdd
     counterexample_list = [last_state.get_str_values()]
+
+    if last_state.entailed(fsm_model.init):
+        return counterexample_list
 
     has_inputs = len(fsm_model.bddEnc.inputsVars) > 0
     curr_state_bdd = last_state
@@ -142,7 +145,7 @@ def check_explain_response_spec(spec):
     reachable_states, trace_layers = _compute_reachable(fsm_model)
     # Filter predecessors to only predecessors for which f and not_g holds (violation begins) 
     valid_predecessors = fsm_model.pre(bdd_eg_not_g, bdd_f & bdd_not_g) # Note: the second argument of pre filters both states and inputs
-    violation_states = valid_predecessors & reachable_states
+    violation_states = valid_predecessors & reachable_states & bdd_eg_not_g
 
     if violation_states.is_false():
         return (True, None)
@@ -156,8 +159,9 @@ def check_explain_response_spec(spec):
     # loop (s_violation -> ... -> s_loop)
     has_inputs = len(fsm_model.bddEnc.inputsVars) > 0
     loop_trace = [ s_violation_bdd.get_str_values() ]
+    visited = [ s_violation_bdd ]
 
-    candidates_bdd = fsm_model.post(s_violation_bdd) & bdd_eg_not_g
+    candidates_bdd = fsm_model.post(s_violation_bdd, bdd_f & bdd_not_g) & bdd_eg_not_g
     next_bdd = fsm_model.pick_one_state(candidates_bdd)
 
     # Inputs
@@ -170,11 +174,18 @@ def check_explain_response_spec(spec):
 
     loop_trace.append(next_bdd.get_str_values())
     curr_bdd = next_bdd
-    visited = [ curr_bdd ]
 
     while True:
+        # loop closed check
+        if curr_bdd in visited:
+            full_trace = prefix_trace_list[:-1] + loop_trace
+            return (False, tuple(full_trace))
+        else:
+            visited.append(curr_bdd)
+
+
         # Find a successor in EG(¬g)
-        possible_successors = fsm_model.post(curr_bdd) & bdd_eg_not_g
+        possible_successors = fsm_model.post(curr_bdd, bdd_not_g) & bdd_eg_not_g
 
         # Should not be possible
         if possible_successors.is_false():
@@ -192,13 +203,6 @@ def check_explain_response_spec(spec):
             loop_trace.append({})
 
         loop_trace.append(next_str)
-
-        # loop closed check
-        if next_bdd in visited:
-            full_trace = prefix_trace_list[:-1] + loop_trace
-            return (False, tuple(full_trace))
-        else:
-            visited.append(next_bdd)
 
         curr_bdd = next_bdd
 
